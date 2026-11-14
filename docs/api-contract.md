@@ -23,96 +23,6 @@ Python **不解析 JWT**，用户身份完全由 Java 通过 `X-User-Id` 传入�
 
 ## 3. Vue → Java
 
-### 3.0 鉴权接口（登录后所有 /api/** 请求都带 token）
-
-| 方法 | 路径 | 说明 | 是否需登录 |
-|---|---|---|---|
-| POST | `/api/auth/register` | 注册，返回 token | 否 |
-| POST | `/api/auth/login` | 登录，返回 token | 否 |
-| GET | `/api/auth/me` | 当前用户信息 | 是 |
-| GET | `/api/health` | 健康检查（含数据库/Agent 探活） | 否 |
-
-**POST /api/auth/login**
-
-```json
-// Request
-{ "username": "zhangsan", "password": "123456" }
-
-// Response data
-{
-  "token": "eyJhbGciOiJIUzM4NCJ9...",
-  "expiresIn": 604800,
-  "user": { "id": 1, "username": "zhangsan", "nickname": "张三", "phone": "13800000001", "avatarUrl": null }
-}
-```
-
-**POST /api/auth/register**：`username`（3~32 位字母数字下划线）、`password`（6~64）、`nickname`、`phone` 可选。
-
-> 种子账号：`zhangsan` / `lisi` / `wangwu`，密码统一 `123456`。
-> 开发模式下也接受 `Authorization: Bearer dev-token`（以 userId=1 身份），见 `pilot.auth.dev-mode`。
-
-### 3.0.1 商城浏览接口（人找货，不经过 Agent）
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/products` | 商品分页列表 |
-| GET | `/api/products/{id}` | 商品详情（含 SKU、参数、所属场景） |
-| GET | `/api/categories` | 品类树（两级） |
-| GET | `/api/brands` | 品牌列表（带在售商品数） |
-| GET | `/api/scenes` | 购物场景列表 |
-
-**GET /api/products** 查询参数：
-
-| 参数 | 类型 | 说明 |
-|---|---|---|
-| categoryId | long | 品类 ID；默认包含其子品类 |
-| includeChildren | bool | 默认 true |
-| brandId | long | 品牌 |
-| minPrice / maxPrice | number | 价格区间 |
-| keyword | string | 标题/副标题/卖点模糊匹配 |
-| sort | string | `sales`(默认) / `price_asc` / `price_desc` / `rating` / `newest` |
-| page / size | int | 默认 1 / 20，size 上限 100 |
-
-返回 `PageResult<ProductCard>`：`{ list, total, page, size, pages }`，`ProductCard` 结构同 4.2 的 `products[]` 元素。
-
-### 3.0.2 购物车与订单
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/cart` | 购物车视图（含实时价格/库存/异常提示） |
-| GET | `/api/cart/count` | 购物车条目数（角标用） |
-| POST | `/api/cart/items` | 加购 |
-| POST | `/api/cart/confirm` | **Agent 建议后的写操作确认入口**（见第 7 节） |
-| POST | `/api/cart/items/{id}/quantity?quantity=` | 改数量（≤0 等价删除） |
-| POST | `/api/cart/items/{id}/selected?selected=` | 单条勾选 |
-| POST | `/api/cart/selected?selected=` | 全选 / 全不选 |
-| DELETE | `/api/cart/items/{id}` | 删除条目 |
-| POST | `/api/orders` | 下单（扣库存 + 写订单 + 清购物车，单事务） |
-| GET | `/api/orders` | 订单列表（`status` 可选过滤） |
-| GET | `/api/orders/{id}` | 订单详情 |
-| POST | `/api/orders/{id}/cancel` | 取消（仅待付款，回补库存） |
-| POST | `/api/orders/{id}/pay` | 支付占位（本项目不接支付渠道） |
-
-**POST /api/cart/items** / **/api/cart/confirm**
-
-```json
-{ "productId": 200301, "skuId": null, "quantity": 2, "sessionId": "s_xxx", "agentContext": {} }
-```
-
-**POST /api/orders**：`{ "cartItemIds": [1,2], "shipping": {}, "remark": "" }`。
-`cartItemIds` 为空表示结算购物车中已勾选的条目。**请求体没有金额字段——金额一律服务端重算**。
-
-**购物车/订单的金额规则**：`totalAmount` 为商品总额；满 99 免运费，否则加 8 元运费得 `payAmount`。
-
-### 3.0.3 会话历史
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/chat/sessions` | 会话列表 |
-| GET | `/api/chat/sessions/{sessionNo}` | 会话详情（消息 + 槽位） |
-| POST | `/api/chat/click` | 上报推荐点击（算 CTR） |
-| GET | `/api/chat/stats?days=7` | 效果统计（CTR / CVR / 平均时延） |
-
 ### POST /api/chat/stream
 
 发起对话，返回 SSE 流。
@@ -249,31 +159,6 @@ data: <json>
 | `AGENT_ERROR` | Python 内部异常 | 是 |
 | `UPSTREAM_ERROR` | LLM 上游异常 | 是 |
 
-### 4.3 业务接口错误码（HTTP 响应体里的 code）
-
-SSE 流内的错误用上面的字符串码；普通 JSON 接口用下面的数字码，结构为
-`{ "code": 0, "message": "ok", "data": {}, "traceId": "..." }`。
-
-| code | HTTP | 含义 |
-|---|---|---|
-| 0 | 200 | 成功 |
-| 1001 | 400 | 参数不合法 |
-| 1002 | 401 | 未登录 / token 失效 |
-| 1003 | 403 | 无权访问 |
-| 1004 | 404 | 资源不存在 |
-| 1005 | 409 | 资源状态冲突 |
-| 1006 | 429 | 请求过于频繁 |
-| 2001 | 409 | 库存不足 |
-| 2002 | 400 | 购物车为空 |
-| 2003 | 409 | 商品已下架 |
-| 2004 | 409 | 订单状态不允许该操作 |
-| 3001 | 504 | Agent 超时 |
-| 3002 | 502 | Agent 异常 |
-| 3003 | 502 | 上游异常 |
-| 5000 | 500 | 服务器内部错误 |
-
-> 越权访问他人资源统一返回 **404**（而非 403），避免暴露资源是否存在。
-
 ## 5. Java → Python
 
 ### POST /agent/chat
@@ -316,16 +201,10 @@ Agent 的工具通过以下接口取数据。**数据库权限不下放给 Pytho
 |---|---|---|
 | `search_products` | `POST /internal/products/search` | 向量 + 结构化混合检索 |
 | `get_product_detail` | `GET /internal/products/{id}` | 单商品详情与参数 |
-| `check_stock` | `GET /internal/inventory/{productId}?skuId=` | 实时库存 |
-| `get_order_history` | `GET /internal/orders/recent?limit=` | 最近订单，支持"再来一单" |
-| `add_to_cart` | `POST /internal/cart/items` | 加购（写操作，仅限内部链路） |
+| `check_stock` | `GET /internal/inventory/{skuId}` | 实时库存 |
+| `get_order_history` | `GET /internal/orders/recent?userId=` | 最近订单，支持"再来一单" |
+| `add_to_cart` | `POST /internal/cart/items` | 加购（写操作） |
 | `get_user_profile` | `GET /internal/users/{id}/profile` | 偏好、历史消费区间 |
-| （辅助） | `GET /internal/scenes` | 场景列表，供意图识别 |
-| （辅助） | `GET /internal/scenes/{id}/categories` | 场景→品类权重 |
-
-**鉴权**：所有 `/internal/**` 必须带 `X-Internal-Token`，由 `InternalTokenFilter` 统一校验，缺失或错误返回 401。
-
-**用户身份**：只认请求头 `X-User-Id`（由 Java 注入）。**不信任请求体或查询参数里的 userId** —— 否则 Agent 可伪造身份读他人订单。
 
 统一响应包装：
 

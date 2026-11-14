@@ -1,6 +1,5 @@
 server:
   port: 8080
-  shutdown: graceful
 
 spring:
   application:
@@ -8,32 +7,12 @@ spring:
   codec:
     max-in-memory-size: 2MB
 
-# MySQL 数据源。本机需先执行：bash pilot-infra/scripts/mysql-start.sh start
-# 连接参数用环境变量覆盖，便于换环境时不改代码：
-#   MYSQL_PASSWORD=xxx
 pilot:
-  datasource:
-    host: ${MYSQL_HOST:127.0.0.1}
-    port: ${MYSQL_PORT:3306}
-    database: ${MYSQL_DATABASE:shop_pilot}
-    username: ${MYSQL_USER:root}
-    password: ${MYSQL_PASSWORD:1234}
-    pool-initial-size: 5
-    pool-max-size: 20
   agent:
-    base-url: ${AGENT_BASE_URL:http://localhost:8000}
-    internal-token: ${INTERNAL_TOKEN:dev-internal-token-change-me}
+    base-url: http://localhost:8000
+    internal-token: dev-internal-token-change-me
     connect-timeout-ms: 3000
     response-timeout-ms: 90000
-  auth:
-    # 生产必须用环境变量覆盖；不足 32 字节会启动失败（HS256 要求）
-    jwt-secret: ${JWT_SECRET:shoppilot-dev-secret-key-must-be-at-least-32-bytes-long}
-    access-token-ttl-seconds: 604800   # 7 天
-    issuer: pilot-server
-    # 开发模式：前端可用 dev-token 免登录联调，上线前置 false
-    dev-mode: ${AUTH_DEV_MODE:true}
-    dev-token: dev-token
-    dev-user-id: 1
   cors:
     allowed-origins:
       - http://localhost:5173
@@ -42,4 +21,3 @@ logging:
   level:
     com.shoppilot: DEBUG
     org.springframework.web: INFO
-    org.springframework.r2dbc: INFO
