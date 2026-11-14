@@ -33,6 +33,8 @@ dist-ssr/
 *.local
 .vite/
 coverage/
+# vue-tsc 的增量编译缓存，属于构建产物
+*.tsbuildinfo
 
 # ---- Python ----
 __pycache__/
@@ -61,3 +63,11 @@ logs/
 *.sqlite
 *.db
 data/
+
+# ---- 本地运行时临时产物 ----
+# 本地调试脚本、进程 pid、临时数据库目录等，不属于源码
+.runtime/
+
+# ---- AI 工具工作数据 ----
+# 项目记忆/会话数据，仅本地保留，不进版本库
+.workbuddy-ai/
