@@ -31,6 +31,8 @@ dist-ssr/
 .pnpm-store/
 .npm/
 *.local
+# vue-tsc 的增量编译缓存，属于构建产物
+*.tsbuildinfo
 .vite/
 coverage/
 
@@ -61,3 +63,12 @@ logs/
 *.sqlite
 *.db
 data/
+
+# ---- Local Runtime ----
+# MySQL 本地实例的 pid/错误日志等运行时产物
+.runtime/
+
+# ---- AI 协作工具的本地记忆 ----
+# WorkBuddy 的工作记忆（会话日志、临时上下文），属于本机运行时产物，
+# 与 .runtime/ 同类，不应进仓库。项目真正的知识沉淀放在 docs/ 里。
+.workbuddy-ai/

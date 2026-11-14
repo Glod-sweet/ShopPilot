@@ -1,13 +1,31 @@
 :root {
-  --bg: #f7f7f5;
+  /* ---- 基础色板：纸张 + 墨色，避免后台模板的冷灰蓝 ---- */
+  --bg: #f6f5f1;
   --surface: #ffffff;
-  --border: #e5e4e0;
-  --text: #1f1f1d;
-  --text-muted: #6b6a65;
+  --paper: #fbfaf7;
+  --border: #e3e1da;
+  --line: #ecebe5;
+  --text: #1d1d1a;
+  --ink: #22241f;
+  --text-muted: #6d6b63;
+  --text-faint: #9c9a91;
+
+  /* ---- 强调色：墨绿做结构，朱红做价格（中式电商习惯） ---- */
   --accent: #2f6feb;
   --accent-soft: #eaf1fe;
+  --green: #2f5d4f;
+  --green-soft: #eaf0ed;
+  --price: #b3382c;
   --danger: #c0392b;
+  --danger-soft: #fbeceb;
+
   --radius: 12px;
+  --radius-sm: 8px;
+
+  /* ---- 字体：中文用系统黑体，数字用等宽，价格对齐更稳 ---- */
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  --font-num: 'SF Mono', 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
 }
 
 * {
@@ -23,8 +41,7 @@ body {
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font);
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -32,4 +49,33 @@ body {
 
 #app {
   height: 100%;
+}
+
+button {
+  font-family: inherit;
+}
+
+/* 焦点可见性：键盘操作时不丢焦点框，鼠标点击时不出现难看的描边 */
+:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+/* 滚动条：细一点，别抢视觉 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d8d6ce;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #c2c0b7;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }
