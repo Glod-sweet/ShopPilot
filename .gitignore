@@ -1,0 +1,63 @@
+# ---- IDE ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Java / Maven ----
+target/
+build/
+!.mvn/wrapper/maven-wrapper.jar
+*.class
+*.jar
+*.war
+*.log
+hs_err_pid*
+replay_pid*
+
+# ---- Node / Vue ----
+node_modules/
+dist/
+dist-ssr/
+.pnpm-store/
+.npm/
+*.local
+.vite/
+coverage/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.python-version.local
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ---- Env / Secrets ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+application-local.yml
+application-local.yaml
+
+# ---- Data / Logs ----
+logs/
+*.sqlite
+*.db
+data/

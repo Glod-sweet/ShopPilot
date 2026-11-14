@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: pilot-server
+  codec:
+    max-in-memory-size: 2MB
+
+pilot:
+  agent:
+    base-url: http://localhost:8000
+    internal-token: dev-internal-token-change-me
+    connect-timeout-ms: 3000
+    response-timeout-ms: 90000
+  cors:
+    allowed-origins:
+      - http://localhost:5173
+
+logging:
+  level:
+    com.shoppilot: DEBUG
+    org.springframework.web: INFO
