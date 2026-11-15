@@ -16,8 +16,15 @@ public record ChatRequest(
         @Size(max = 2000, message = "message 长度不能超过 2000")
         String message,
         Slots slots,
-        String clientTraceId
+        String clientTraceId,
+        /** 多模态：base64 / data URL / http 图片地址。null 表示纯文本请求 */
+        String image
 ) {
+
+    /** 兼容前端不传图片的调用 */
+    public ChatRequest(String sessionId, String message, Slots slots, String clientTraceId) {
+        this(sessionId, message, slots, clientTraceId, null);
+    }
 
     public record Slots(String category, String budget, String scene) {
         public static Slots empty() {

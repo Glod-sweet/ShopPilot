@@ -22,6 +22,8 @@ dependencies = [
     "redis>=5.0.0",
     # 向量检索
     "numpy>=1.26",
+    # 向量回填脚本（scripts/embed_backfill.py）读写 MySQL 用
+    "pymysql>=1.1.0",
 ]
 
 [project.optional-dependencies]

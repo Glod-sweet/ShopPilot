@@ -227,10 +227,14 @@ public class ChatRepository {
                         """)
                 .bind("sessionId", sessionId)
                 .bind("categoryName", categoryName == null ? "" : categoryName)
-                .bind("sceneCode", sceneCode)
-                .bind("extra", extraJson)
                 .bind("complete", complete ? 1 : 0);
 
+        // 可空列必须走 bindNull：R2DBC 的 bind(key, null) 会直接抛
+        // IllegalArgumentException("Value for parameter ... must not be null")，
+        // 而不是把 null 传给数据库。这个坑此前让槽位写入静默失败 ——
+        // 表现为「用户点了预算选项，下一轮还是被追问预算」。
+        spec = sceneCode == null ? spec.bindNull("sceneCode", String.class) : spec.bind("sceneCode", sceneCode);
+        spec = extraJson == null ? spec.bindNull("extra", String.class) : spec.bind("extra", extraJson);
         spec = categoryId == null ? spec.bindNull("categoryId", Long.class) : spec.bind("categoryId", categoryId);
         spec = budgetMin == null ? spec.bindNull("budgetMin", java.math.BigDecimal.class) : spec.bind("budgetMin", budgetMin);
         spec = budgetMax == null ? spec.bindNull("budgetMax", java.math.BigDecimal.class) : spec.bind("budgetMax", budgetMax);

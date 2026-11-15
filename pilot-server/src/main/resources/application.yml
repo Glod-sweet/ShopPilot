@@ -25,6 +25,16 @@ pilot:
     internal-token: ${INTERNAL_TOKEN:dev-internal-token-change-me}
     connect-timeout-ms: 3000
     response-timeout-ms: 90000
+  # 向量模型：混合检索的语义打分靠它。
+  # 必须与 pilot-agent 的 LLM_API_KEY / EMBEDDING_MODEL 保持一致，
+  # 否则 query 向量和库里存好的商品向量不在同一空间，余弦全是噪声。
+  # 不配 api-key 时自动降级为关键词打分，本地开发不配也能跑。
+  embedding:
+    base-url: ${EMBEDDING_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    api-key: ${EMBEDDING_API_KEY:${LLM_API_KEY:}}
+    model: ${EMBEDDING_MODEL:text-embedding-v2}
+    dim: ${EMBEDDING_DIM:1536}
+    timeout-ms: 3000
   auth:
     # 生产必须用环境变量覆盖；不足 32 字节会启动失败（HS256 要求）
     jwt-secret: ${JWT_SECRET:shoppilot-dev-secret-key-must-be-at-least-32-bytes-long}

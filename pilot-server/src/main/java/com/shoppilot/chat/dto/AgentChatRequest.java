@@ -12,8 +12,16 @@ public record AgentChatRequest(
         String message,
         List<Message> history,
         Slots slots,
-        String traceId
+        String traceId,
+        /** 多模态：base64 / data URL / http 图片地址。null 表示纯文本请求 */
+        String image
 ) {
+
+    /** 兼容不带图片的调用 */
+    public AgentChatRequest(Long userId, String sessionId, String message,
+                            List<Message> history, Slots slots, String traceId) {
+        this(userId, sessionId, message, history, slots, traceId, null);
+    }
 
     public record Message(String role, String content) {
     }

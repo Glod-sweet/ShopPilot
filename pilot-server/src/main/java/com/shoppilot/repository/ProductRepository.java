@@ -50,16 +50,26 @@ public class ProductRepository {
                        b.name AS brand_name,
                        ps.score AS scene_score,
                        ps.reason AS scene_reason,
-                       e.content AS embed_content
+                       e.content AS embed_content,
+                       e.embedding AS embed_vector
                 FROM sp_product p
                 JOIN sp_category c ON c.id = p.category_id
                 LEFT JOIN sp_brand b ON b.id = p.brand_id
                 LEFT JOIN sp_product_embedding e ON e.product_id = p.id
                 """);
 
-        // 场景存在时走场景映射，否则退化为普通品类检索
+        // 场景处理：用 LEFT JOIN 而不是 JOIN。
+        //
+        // 为什么改成 LEFT JOIN：原来的 JOIN 会把候选集严格锁死在场景内，
+        // 场景外但语义高度相关的商品被直接排除。实测踩到 ——
+        // 用户问「通勤地铁太吵，想买个头戴的」，命中 office 场景后候选只剩 5 条，
+        // 而语义余弦最高的「头戴降噪耳机」因为没被标注进 office 场景而完全消失。
+        // 场景标注是人工维护的，必然有覆盖不全的情况，不该成为硬过滤条件。
+        //
+        // 现在改成：场景内的商品拿到 ps.score（0~1），场景外的拿 NULL。
+        // 打分时 NULL 按场景分的中位数处理，语义分仍能把它顶上来。
         if (sceneId != null) {
-            sql.append("JOIN sp_product_scene ps ON ps.product_id = p.id AND ps.scene_id = :sceneId ");
+            sql.append("LEFT JOIN sp_product_scene ps ON ps.product_id = p.id AND ps.scene_id = :sceneId ");
         } else {
             sql.append("LEFT JOIN sp_product_scene ps ON 1 = 0 ");
         }
@@ -83,9 +93,10 @@ public class ProductRepository {
             params.put("maxPrice", maxPrice);
         }
 
-        // 场景检索按场景契合度优先，普通检索按评分销量
+        // 排序只是「取哪些进候选」，最终顺序由 HybridSearchService 重排决定。
+        // 场景内优先，保证场景商品不会被 LIMIT 截掉；剩下的名额留给评分销量高的。
         if (sceneId != null) {
-            sql.append("ORDER BY ps.score DESC, p.rating DESC, p.sales_count DESC ");
+            sql.append("ORDER BY ps.score IS NULL, ps.score DESC, p.rating DESC, p.sales_count DESC ");
         } else {
             sql.append("ORDER BY p.rating DESC, p.sales_count DESC ");
         }
@@ -107,7 +118,8 @@ public class ProductRepository {
                        p.attributes, p.stock, p.sales_count, p.rating, p.comment_count,
                        c.name AS category_name, b.name AS brand_name,
                        NULL AS scene_score, NULL AS scene_reason,
-                       e.content AS embed_content
+                       e.content AS embed_content,
+                       e.embedding AS embed_vector
                 FROM sp_product p
                 JOIN sp_category c ON c.id = p.category_id
                 LEFT JOIN sp_brand b ON b.id = p.brand_id
@@ -313,6 +325,39 @@ public class ProductRepository {
                         ORDER BY level, sort, id
                         """)
                 .map(RowMappers::toMap).all();
+    }
+
+    /**
+     * 按品类名模糊查 ID，供 Agent 传中文品类（「耳机」「香薰」）时解析。
+     * <p>
+     * 为什么需要它：Agent 的工具参数是自然语言里提炼的品类词，
+     * 而检索需要的是 category_id。没有这一步，用户说「想买耳机」时
+     * 品类条件会被静默丢弃，退化成全品类按评分排序。
+     * <p>
+     * 优先精确匹配，其次包含匹配，最后取排序靠前的二级品类。
+     */
+    public Mono<Long> findCategoryIdByName(String name) {
+        if (name == null || name.isBlank()) {
+            return Mono.empty();
+        }
+        return db.sql("""
+                        SELECT id FROM sp_category
+                        WHERE name = :name
+                        ORDER BY level DESC, sort, id
+                        LIMIT 1
+                        """)
+                .bind("name", name.trim())
+                .map((row, meta) -> row.get("id", Long.class))
+                .one()
+                .switchIfEmpty(Mono.defer(() -> db.sql("""
+                                SELECT id FROM sp_category
+                                WHERE name LIKE :kw
+                                ORDER BY level DESC, sort, id
+                                LIMIT 1
+                                """)
+                        .bind("kw", "%" + name.trim() + "%")
+                        .map((row, meta) -> row.get("id", Long.class))
+                        .one()));
     }
 
     /** 全部品牌，前端筛选栏用 */

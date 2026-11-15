@@ -48,6 +48,13 @@ from app.prompts import build_system_prompt
 from app.rag import knowledge_base
 from app.runtime import ToolArtifact, current_artifact, current_trace_id, current_user_id
 from app.schemas import AgentChatRequest, ProductCard, SseEvent
+from app.slots import (
+    build_slot_ask,
+    fill_slots,
+    is_followup_question,
+    is_reorder_intent,
+    missing_required,
+)
 from app.tools import BUSINESS_TOOLS
 
 logger = logging.getLogger("pilot.agent")
@@ -73,6 +80,9 @@ class PreparedContext:
     history: list[BaseMessage] = field(default_factory=list)
     user_text: str = ""
     image_desc: str = ""
+    # 本轮命中的知识原文。同时用于：拼提示词、写进 state 供中间件做预算决策
+    knowledge: str = ""
+    slots: dict[str, str | None] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------
@@ -164,6 +174,11 @@ async def prepare(req: AgentChatRequest) -> PreparedContext:
     """把一次请求加工成模型能吃的完整上下文。"""
     s = get_settings()
 
+    # 0) 槽位先行：抽出来后才能判断要不要追问。
+    # 放在最前面是因为「缺槽位」是最高频分支，追问场景不需要 RAG 和画像，
+    # 那些查询白花 3 秒延迟，用户只是被问一句「预算多少」而已。
+    merged_slots = fill_slots(req.message, req.slots.model_dump())
+
     # 1) 多模态
     image_desc = ""
     if req.image:
@@ -204,7 +219,7 @@ async def prepare(req: AgentChatRequest) -> PreparedContext:
         user_profile=user_profile or None,
         memory_summary=summary or None,
         knowledge=knowledge or None,
-        slots=req.slots.model_dump(),
+        slots=merged_slots,
         multimodal_hint=image_desc or None,
     )
 
@@ -218,6 +233,8 @@ async def prepare(req: AgentChatRequest) -> PreparedContext:
         history=history,
         user_text=req.message,
         image_desc=image_desc,
+        knowledge=knowledge,
+        slots=merged_slots,
     )
 
 
@@ -294,6 +311,55 @@ async def run_agent(req: AgentChatRequest) -> AsyncIterator[SseEvent]:
         },
     )
 
+    # ---- 槽位前置检查 ----
+    # 必填槽位缺失时不进 ReAct 循环，直接追问。
+    # 四个理由：
+    #   1. 省掉一次完整模型调用（追问场景占多轮对话的大头）
+    #   2. 省掉 RAG 检索与画像查询 —— 用户只是被问一句「预算多少」，
+    #      不该为此等 3 秒
+    #   3. 行为确定 —— 模型有时会「自作聪明」先搜一堆再问，用户体验很差
+    #   4. handbook 4.4 的硬要求：必填槽位齐了才执行检索
+    #
+    # 但「拦截」必须克制，否则会把正常对话打断。四类情况一律放行给模型：
+    #   - 「再来一单」：用户不想重新挑，追问预算毫无意义
+    #   - 带图片：用户拍了个东西问「这个有吗」，先让他看到识图结果
+    #   - 回指/追问（「我刚才说预算多少」「这两款哪个好」）：指的是上文已建立的需求，
+    #     拿它追问品类会让用户觉得助手失忆了
+    #   - 已有对话历史：多轮对话里模型自己会判断该不该问，硬拦反而更差
+    quick_slots = fill_slots(req.message, req.slots.model_dump())
+    missing = missing_required(quick_slots)
+    is_first_turn = not req.history
+    should_ask = (
+        missing
+        and is_first_turn
+        and not is_reorder_intent(req.message)
+        and not is_followup_question(req.message)
+        and not req.image
+    )
+    if should_ask:
+        slot = missing[0]
+        yield SseEvent(type="slot_ask", data=build_slot_ask(slot))
+
+        # 追问也要进记忆，否则用户回答后模型不知道上一轮问了什么
+        try:
+            await memory_store.append_turn(req.session_id, "user", req.message)
+            question = build_slot_ask(slot)["question"]
+            await memory_store.append_turn(req.session_id, "assistant", question)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("memory: 追问回写失败 %s", exc)
+
+        yield SseEvent(
+            type="done",
+            data={
+                "messageId": message_id,
+                "finishReason": "slot_ask",
+                "totalTokens": 0,
+                "toolCalls": 0,
+                "latencyMs": int((time.monotonic() - started) * 1000),
+            },
+        )
+        return
+
     try:
         prepared = await prepare(req)
     except Exception as exc:
@@ -332,8 +398,10 @@ async def run_agent(req: AgentChatRequest) -> AsyncIterator[SseEvent]:
             *prepared.history,
             HumanMessage(content=prepared.user_text or "（用户发来一张图片）"),
         ],
-        "slots": req.slots.model_dump(),
-        "knowledge": prepared.system_prompt,
+        # state 里的动态数据是"结构化"的，不是提示词副本。
+        # 提示词已经在 messages[0] 里了，重复塞一遍纯属浪费 token 且语义混乱。
+        "slots": prepared.slots,
+        "knowledge": prepared.knowledge,
         "image_desc": prepared.image_desc,
     }
 

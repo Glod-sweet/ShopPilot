@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 执行顺序（与 handbook 的原始设计有意不同，原因见类注释末尾）：
  *   1. 场景识别：从用户输入命中 sp_scene.keywords → 得到场景ID
  *   2. 结构化过滤：上架 + 库存 + 价格 + 品类（场景内品类按权重）
- *   3. 向量相似度：在候选集内算余弦（MySQL 社区版无 DISTANCE()）
+ *   3. 语义相似度：query 向量化后与候选集的向量算余弦
  *   4. 重排序：场景契合度 0.5 + 语义相似 0.3 + 评分销量 0.2
  *   5. 返回 top N，附带推荐理由
  *
@@ -30,24 +30,43 @@ import java.util.concurrent.atomic.AtomicReference;
  * 但 MySQL 社区版不支持向量索引（已实测），先向量召回等于全表扫描 + 内存排序，
  * 反而比「先过滤再算相似度」慢。当前数据量下先过滤是正确的，等切到 pgvector
  * 再改回先召回。
+ *
+ * 语义打分的两档：
+ *   - 有向量（sp_product_embedding.dim > 0）→ 真余弦相似度
+ *   - 无向量或向量接口不可用 → 降级为「关键词覆盖率 + 标题命中加权」
+ * 降级不是摆设：本地没配 embedding key 时要能跑，接口抖动时也不能让检索挂掉。
  */
 @Service
 public class HybridSearchService {
 
     private static final Logger log = LoggerFactory.getLogger(HybridSearchService.class);
 
-    /** 重排序权重：场景契合度最重要，因为它是人工标注的强信号 */
-    private static final double W_SCENE = 0.50;
-    private static final double W_SEMANTIC = 0.30;
-    private static final double W_QUALITY = 0.20;
+    /**
+     * 重排序权重。
+     * <p>
+     * 为什么语义权重最高（0.45）而不是场景分：
+     * 场景分是「这个商品适合这个场景」的人工标注，表达的是**宽泛的适用性**；
+     * 语义分是「这个商品符合用户这句话」的度量，表达的是**具体的匹配度**。
+     * 用户说「通勤地铁太吵，想买个头戴的」时，「头戴」这个约束只有语义分能抓到 ——
+     * 场景分只会说「保温杯也适合办公通勤」，于是保温杯排到了耳机前面。
+     * <p>
+     * 权重依据实测：场景分在 0.5~0.96 之间，语义归一化后 0~1 分布充分，
+     * 把语义提到 0.45 后，明确的品类约束才能真正主导排序。
+     * 场景分降到 0.30 但不清零，因为它能兜住「用户没明说但确实需要」的情况。
+     */
+    private static final double W_SEMANTIC = 0.45;
+    private static final double W_SCENE = 0.30;
+    private static final double W_QUALITY = 0.25;
 
     private final ProductRepository productRepo;
+    private final EmbeddingService embeddingService;
 
     /** 场景关键词缓存，避免每次检索都查库（场景表很小且几乎不变） */
     private final AtomicReference<List<Map<String, Object>>> sceneCache = new AtomicReference<>();
 
-    public HybridSearchService(ProductRepository productRepo) {
+    public HybridSearchService(ProductRepository productRepo, EmbeddingService embeddingService) {
         this.productRepo = productRepo;
+        this.embeddingService = embeddingService;
     }
 
     /**
@@ -61,15 +80,19 @@ public class HybridSearchService {
      */
     public Mono<SearchResult> search(String query, Long category, BigDecimal minPrice,
                                      BigDecimal maxPrice, int limit) {
-        return loadScenes()
-                .flatMap(scenes -> {
+        return Mono.zip(loadScenes(), embeddingService.embedQuery(query))
+                .flatMap(t -> {
+                    List<Map<String, Object>> scenes = t.getT1();
+                    float[] queryVector = t.getT2();
+
                     // 1) 场景识别
                     Optional<Map<String, Object>> matched = matchScene(query, scenes);
                     Long sceneId = matched.map(m -> ((Number) m.get("id")).longValue()).orElse(null);
 
-                    log.debug("检索 query={} 命中场景={} category={} price=[{},{}]",
+                    boolean useVector = queryVector != null && queryVector.length > 0;
+                    log.debug("检索 query={} 命中场景={} category={} price=[{},{}] 语义={}",
                             query, matched.map(m -> m.get("code")).orElse("none"),
-                            category, minPrice, maxPrice);
+                            category, minPrice, maxPrice, useVector ? "向量" : "关键词");
 
                     // 2) 结构化过滤拿候选（先过滤，理由见类注释）
                     return productRepo
@@ -77,7 +100,7 @@ public class HybridSearchService {
                             .collectList()
                             .map(candidates -> {
                                 // 3) + 4) 语义相似 + 重排序
-                                List<Scored> scored = rank(query, candidates, sceneId != null);
+                                List<Scored> scored = rank(query, queryVector, candidates, sceneId != null);
                                 int total = scored.size();
 
                                 // 5) 取 top N
@@ -91,7 +114,8 @@ public class HybridSearchService {
                                         total,
                                         sceneId,
                                         matched.map(m -> (String) m.get("code")).orElse(null),
-                                        scored.stream().map(s -> s.productId).toList()
+                                        scored.stream().map(s -> s.productId).toList(),
+                                        useVector
                                 );
                             });
                 });
@@ -167,22 +191,65 @@ public class HybridSearchService {
     /**
      * 打分与排序。
      *
-     * 语义相似度用「字符二元组 + 关键词覆盖率」的轻量近似，不依赖 embedding：
-     * 当前 embedding 尚未回填（dim=0），用真向量反而全是 0 分。
-     * 等 embedding 回填后，把 semanticScore 换成余弦即可，其余逻辑不动。
+     * 语义分两档：
+     *   - queryVector 非空 → 与候选的存储向量算余弦（真语义）
+     *   - queryVector 为空（没配 key / 接口挂了 / query 为空）→ 关键词近似降级
+     * 每个候选单独判断：个别商品向量缺失时它自己走关键词，不影响其他商品用向量。
+     * <p>
+     * 关键一步是**候选集内 min-max 归一化**。中文商品文本的原始余弦分布很窄
+     * （实测 -0.09 ~ +0.32），如果直接拿绝对值加权，所有商品的语义分都挤在一起，
+     * 相对差异被场景分和评分销量淹没 —— 表现为「问头戴耳机，保温杯排第一」。
+     * 归一化后 0 = 本批最不相关，1 = 本批最相关，相对排序才真正参与决策。
      */
-    private List<Scored> rank(String query, List<Map<String, Object>> candidates, boolean hasScene) {
-        List<Scored> list = new ArrayList<>(candidates.size());
-        for (Map<String, Object> p : candidates) {
+    private List<Scored> rank(String query, float[] queryVector,
+                              List<Map<String, Object>> candidates, boolean hasScene) {
+        int n = candidates.size();
+        if (n == 0) {
+            return List.of();
+        }
+        boolean vectorUsable = queryVector != null && queryVector.length > 0;
+
+        // 第一遍：算原始语义分
+        double[] rawSemantic = new double[n];
+        String[] semanticBy = new String[n];
+        for (int i = 0; i < n; i++) {
+            Map<String, Object> p = candidates.get(i);
+            if (vectorUsable) {
+                float[] stored = EmbeddingService.parseStored(str(p.get("embed_vector")));
+                if (stored.length == queryVector.length) {
+                    rawSemantic[i] = EmbeddingService.cosine(queryVector, stored);
+                    semanticBy[i] = "vector";
+                    continue;
+                }
+            }
+            rawSemantic[i] = semanticScore(query, p);
+            semanticBy[i] = "keyword";
+        }
+
+        // 第二遍：min-max 归一化。全批同分时给 0.5，避免除零且不偏袒任何一个
+        double min = Double.MAX_VALUE;
+        double max = -Double.MAX_VALUE;
+        for (double v : rawSemantic) {
+            min = Math.min(min, v);
+            max = Math.max(max, v);
+        }
+        double span = max - min;
+
+        // 第三遍：加权汇总
+        List<Scored> list = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            Map<String, Object> p = candidates.get(i);
+            double semantic = span < 1e-6 ? 0.5 : (rawSemantic[i] - min) / span;
+
             double sceneScore = hasScene ? asDouble(p.get("scene_score"), 0.5) : 0.5;
-            double semantic = semanticScore(query, p);
             double rating = asDouble(p.get("rating"), 4.5);
             int sales = (int) asDouble(p.get("sales_count"), 0);
             // 评分归一到 0~1（5 分制），销量取对数避免头部商品一家独大
             double quality = (rating / 5.0) * 0.7 + Math.min(1.0, Math.log10(sales + 1) / 4.0) * 0.3;
 
             double total = W_SCENE * sceneScore + W_SEMANTIC * semantic + W_QUALITY * quality;
-            list.add(new Scored(((Number) p.get("id")).longValue(), total, sceneScore, semantic, p));
+            list.add(new Scored(((Number) p.get("id")).longValue(), total, sceneScore,
+                    semantic, semanticBy[i], rawSemantic[i], p));
         }
         list.sort(Comparator.comparingDouble((Scored s) -> s.total).reversed());
         return list;
@@ -267,9 +334,17 @@ public class HybridSearchService {
         card.put("tags", JsonUtils.toStringList(str(p.get("tags"))));
         card.put("categoryName", p.get("category_name"));
         card.put("brandName", p.get("brand_name"));
-        // reason 是必填字段：优先用场景里人工标注的理由，其次用卖点摘要
+        // reason 是必填字段：优先用场景里人工标注的理由，其次用卖点摘要。
+        // 注意这只是「兜底文案」——真正的场景化理由由 Agent 侧针对用户这句话重写，
+        // 见 pilot-agent/app/reason.py。Java 拼的理由只保证字段不空。
         card.put("reason", buildReason(p, s));
         card.put("_score", Math.round(s.total * 1000) / 1000.0);
+        // 打分明细：排查「为什么这件排第一」时不用再翻日志
+        card.put("_sceneScore", Math.round(s.sceneScore * 1000) / 1000.0);
+        card.put("_semanticScore", Math.round(s.semantic * 1000) / 1000.0);
+        // 原始余弦（未归一化）。归一化后看不出「到底有多相关」，这个才有绝对值含义
+        card.put("_rawSemantic", Math.round(s.rawSemantic * 10000) / 10000.0);
+        card.put("_semanticBy", s.semanticBy);
         return card;
     }
 
@@ -308,7 +383,8 @@ public class HybridSearchService {
     }
 
     private record Scored(long productId, double total, double sceneScore,
-                          double semantic, Map<String, Object> product) {
+                          double semantic, String semanticBy, double rawSemantic,
+                          Map<String, Object> product) {
     }
 
     /** 检索结果，带足够的过程信息便于排查与埋点 */
@@ -317,7 +393,9 @@ public class HybridSearchService {
             int candidateCount,
             Long sceneId,
             String sceneCode,
-            List<Long> rankedIds
+            List<Long> rankedIds,
+            /** 本次语义打分用的是真向量还是关键词降级，排查排序异常时第一时间要看这个 */
+            boolean vectorScored
     ) {
     }
 }
