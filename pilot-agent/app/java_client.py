@@ -1,11 +1,20 @@
 """Java 内部接口客户端。
 
 所有工具的数据来源。Python 不直连数据库，这是硬约束。
+工具调用超时统一 5s——快失败好过拖死整条 SSE 流。
 """
+
+from __future__ import annotations
+
+import logging
 
 import httpx
 
 from app.config import get_settings
+
+logger = logging.getLogger("pilot.java")
+
+TOOL_TIMEOUT = 5.0
 
 
 class JavaClient:
@@ -13,6 +22,15 @@ class JavaClient:
         s = get_settings()
         self._base = s.java_base_url
         self._headers = {"X-Internal-Token": s.internal_token}
+
+    async def _request(self, method: str, path: str, **kwargs) -> dict:
+        async with httpx.AsyncClient(timeout=TOOL_TIMEOUT) as client:
+            resp = await client.request(method, f"{self._base}{path}", headers=self._headers, **kwargs)
+            resp.raise_for_status()
+            body = resp.json()
+            if body.get("code") != 0:
+                raise RuntimeError(f"{path} failed: {body.get('message')}")
+            return body.get("data") or {}
 
     async def search_products(
         self,
@@ -29,28 +47,18 @@ class JavaClient:
             "minPrice": min_price,
             "limit": limit,
         }
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(
-                f"{self._base}/internal/products/search", json=payload, headers=self._headers
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            if body.get("code") != 0:
-                raise RuntimeError(f"search failed: {body.get('message')}")
-            return body["data"].get("products", [])
+        data = await self._request("POST", "/internal/products/search", json=payload)
+        return data.get("products", [])
+
+    async def get_product_detail(self, product_id: int) -> dict:
+        return await self._request("GET", f"/internal/products/{product_id}")
 
     async def recent_orders(self, user_id: int) -> list[dict]:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{self._base}/internal/orders/recent",
-                params={"userId": user_id},
-                headers=self._headers,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            if body.get("code") != 0:
-                raise RuntimeError(f"orders failed: {body.get('message')}")
-            return body["data"].get("orders", [])
+        data = await self._request("GET", "/internal/orders/recent", params={"userId": user_id})
+        return data.get("orders", [])
+
+    async def get_user_profile(self, user_id: int) -> dict:
+        return await self._request("GET", f"/internal/users/{user_id}/profile")
 
 
 java_client = JavaClient()

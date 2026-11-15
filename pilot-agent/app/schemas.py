@@ -29,6 +29,8 @@ class AgentChatRequest(BaseModel):
     history: list[HistoryMessage] = Field(default_factory=list)
     slots: Slots = Field(default_factory=Slots)
     trace_id: str | None = Field(default=None, alias="traceId")
+    # 多模态：base64 或 data URL 或 http 图片地址。为空表示纯文本请求
+    image: str | None = None
 
     model_config = {"populate_by_name": True}
 

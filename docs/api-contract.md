@@ -82,7 +82,7 @@ data: <json>
 **meta**
 
 ```json
-{ "sessionId": "s_20261114_001", "messageId": "m_8821", "model": "deepseek-chat" }
+{ "sessionId": "s_20261114_001", "messageId": "m_8821", "model": "qwen-plus", "traceId": "uuid-v4" }
 ```
 
 **token**
@@ -97,11 +97,15 @@ data: <json>
 { "tool": "search_products", "displayText": "正在为您筛选商品…", "args": { "category": "gift", "maxPrice": 300 } }
 ```
 
+`tool` 可能取值：`search_products` / `get_product_detail` / `get_order_history` / `tavily_search` / `tavily_extract`。
+
 **tool_result**
 
 ```json
-{ "tool": "search_products", "count": 12, "elapsedMs": 340 }
+{ "tool": "search_products", "count": 12, "elapsedMs": 340, "preview": "检索到 3 件商品：…" }
 ```
+
+`preview` 为截断后的结果摘要，前端可选展示。识图结果也走这个事件，`tool` 为 `"vision"`、`preview` 为图片描述。
 
 **product_card**（最关键的结构）
 
@@ -140,7 +144,7 @@ data: <json>
 **done**
 
 ```json
-{ "messageId": "m_8821", "finishReason": "stop", "totalTokens": 486, "latencyMs": 2140 }
+{ "messageId": "m_8821", "finishReason": "stop", "totalTokens": 486, "toolCalls": 2, "latencyMs": 2140 }
 ```
 
 **error**
@@ -177,7 +181,8 @@ data: <json>
     { "role": "assistant", "content": "您好，想买点什么？" }
   ],
   "slots": { "category": null, "budget": null, "scene": null },
-  "traceId": "uuid-v4"
+  "traceId": "uuid-v4",
+  "image": null
 }
 ```
 
@@ -186,12 +191,29 @@ data: <json>
 | history | 由 Java 从数据库读取后传入，**Python 不查库** |
 | slots | 上一轮槽位状态，由 Java 持久化，Python 无状态 |
 | traceId | 全链路追踪，Python 日志必须打印 |
+| image | 可选。base64 / data URL / http 图片地址。非空时走多模态分支，先经 VL 模型识图 |
 
 ### GET /agent/health
 
 ```json
-{ "status": "ok", "version": "0.1.0", "model": "deepseek-chat" }
+{
+  "status": "ok",
+  "version": "0.2.0",
+  "model": "qwen-plus",
+  "vlModel": "qwen3-vl-plus",
+  "embeddingModel": "text-embedding-v2",
+  "rag": { "chunks": 15, "degraded": false },
+  "mcp": { "ready": true, "tools": ["tavily_search", "tavily_extract"], "error": null },
+  "memory": { "backend": "redis", "ok": true }
+}
 ```
+
+`rag.degraded=true` 表示 embedding 接口不可用，已降级为哈希向量（功能可用，效果下降）。
+`mcp.ready=false` 时 `error` 给出原因，此时 Agent 只是缺少联网工具，对话仍可用。
+
+### DELETE /agent/session/{sessionId}
+
+清空该会话的 Redis 记忆（原文 + 摘要）。调试与「新建对话」用，需带 `X-Internal-Token`。
 
 ## 6. Python → Java（反向工具调用）
 

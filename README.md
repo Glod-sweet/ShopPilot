@@ -36,6 +36,11 @@ Vue3 (5173) ──HTTP/SSE──▶ Java (8080) ──HTTP/SSE──▶ Python A
 ## 技术要点
 
 - **混合检索**：向量召回 + 结构化过滤（价格/库存/上架）+ 重排序，解决纯向量检索在电商场景下的失效问题
+- **双 RAG**：商品检索走 pgvector，导购知识走进程内向量库，两类问题分流
+- **会话记忆**：Redis 存最近 N 轮原文 + 超阈值自动摘要压缩，上下文不无限膨胀
+- **上下文工程**：中间件按条数 + 字符数双预算裁剪，保证 tool_call 与 tool_result 不被切断
+- **多模态**：图片先经 VL 模型转文本描述，后续轮次复用，避免重复传图
+- **MCP 接入**：Tavily 官方 MCP server（stdio）提供联网检索，站内商品库覆盖不到时兜底
 - **槽位状态机**：LangGraph 管理必填槽位，缺失则走追问分支
 - **SSE 流式透传**：Python → Java（WebFlux Flux）→ 前端逐字渲染，中间态可感知
 - **反向工具调用**：Python 通过内部接口回调 Java，写操作需用户二次确认
@@ -47,9 +52,13 @@ ShopPilot/
 ├── pilot-web/        Vue3 前端
 ├── pilot-server/     Java 后端（唯一入口）
 ├── pilot-agent/      Python Agent 服务
+│   ├── app/          编排、记忆、RAG、MCP、中间件
+│   ├── knowledge/    导购知识库（RAG 语料）
+│   └── scripts/      自检脚本、Java mock
 ├── pilot-infra/      Docker Compose、初始化 SQL
 └── docs/
-    └── api-contract.md   三端接口契约（唯一事实来源）
+    ├── api-contract.md   三端接口契约（唯一事实来源）
+    └── agent-design.md   Agent 层设计与技术点说明
 ```
 
 ## 版本要求
@@ -82,3 +91,4 @@ ShopPilot/
 ## 文档
 
 - [三端接口契约](docs/api-contract.md)
+- [Agent 层设计与技术点说明](docs/agent-design.md)
