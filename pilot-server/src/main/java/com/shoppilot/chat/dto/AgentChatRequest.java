@@ -12,15 +12,17 @@ public record AgentChatRequest(
         String message,
         List<Message> history,
         Slots slots,
+        /** 对比模式：参与对比的商品 ID。为空表示普通推荐 */
+        List<Long> compareProductIds,
         String traceId,
         /** 多模态：base64 / data URL / http 图片地址。null 表示纯文本请求 */
         String image
 ) {
 
-    /** 兼容不带图片的调用 */
+    /** 兼容不带图片、不带对比的调用 */
     public AgentChatRequest(Long userId, String sessionId, String message,
                             List<Message> history, Slots slots, String traceId) {
-        this(userId, sessionId, message, history, slots, traceId, null);
+        this(userId, sessionId, message, history, slots, List.of(), traceId, null);
     }
 
     public record Message(String role, String content) {

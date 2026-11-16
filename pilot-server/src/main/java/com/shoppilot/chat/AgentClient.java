@@ -75,9 +75,14 @@ public class AgentClient {
                         str(slots.get("budget")),
                         str(slots.get("scene"))
                 ),
+                req.compareIdsOrEmpty(),
                 traceId,
                 image
         );
+
+        if (req.isCompareMode()) {
+            log.debug("→ agent chat 对比模式 ids={}", req.compareIdsOrEmpty());
+        }
 
         log.debug("→ agent chat, userId={}, sessionId={}, history={}, traceId={}",
                 userId, sessionId, messages.size(), traceId);

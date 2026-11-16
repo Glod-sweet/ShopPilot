@@ -11,6 +11,8 @@ interface StreamOptions {
   message: string
   sessionId?: string
   slots?: Slots
+  /** 对比模式：参与对比的商品 ID。非空时后端跳过检索直接比较 */
+  compareProductIds?: number[]
   signal?: AbortSignal
 }
 
@@ -30,6 +32,7 @@ export async function streamChat(
       sessionId: opts.sessionId ?? null,
       message: opts.message,
       slots: opts.slots ?? { category: null, budget: null, scene: null },
+      compareProductIds: opts.compareProductIds ?? [],
       clientTraceId: crypto.randomUUID(),
     }),
     signal: opts.signal,

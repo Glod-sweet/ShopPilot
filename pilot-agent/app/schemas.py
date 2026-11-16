@@ -31,8 +31,14 @@ class AgentChatRequest(BaseModel):
     trace_id: str | None = Field(default=None, alias="traceId")
     # 多模态：base64 或 data URL 或 http 图片地址。为空表示纯文本请求
     image: str | None = None
+    # 对比模式：参与对比的商品 ID。非空时跳过检索，直接拉详情做横向比较
+    compare_product_ids: list[int] = Field(default_factory=list, alias="compareProductIds")
 
     model_config = {"populate_by_name": True}
+
+    @property
+    def is_compare_mode(self) -> bool:
+        return bool(self.compare_product_ids)
 
 
 class ProductCard(BaseModel):

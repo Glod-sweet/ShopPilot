@@ -32,7 +32,10 @@ Python **不解析 JWT**，用户身份完全由 Java 通过 `X-User-Id` 传入�
 ```json
 {
   "sessionId": "s_20261114_001",
-  "message": "想给女朋友买个生日礼物，300以内",
+  "message": "这两款哪个更值",
+  "slots": { "category": null, "budget": null, "scene": null },
+  "compareProductIds": [200301, 200401],
+  "image": null,
   "clientTraceId": "uuid-v4"
 }
 ```
@@ -41,7 +44,21 @@ Python **不解析 JWT**，用户身份完全由 Java 通过 `X-User-Id` 传入�
 |---|---|---|---|
 | sessionId | string | 否 | 为空则新建会话，由响应头 `X-Session-Id` 返回 |
 | message | string | 是 | 用户输入，1~2000 字符 |
+| slots | object | 否 | 已收集的槽位，前端累积后回传 |
+| **compareProductIds** | **number[]** | **否** | **参与对比的商品 ID，1~5 个。非空时 Agent 进入对比模式** |
+| image | string | 否 | 多模态图片：base64 / data URL / http 地址 |
 | clientTraceId | string | 否 | 前端埋点用，原样回传 |
+
+**对比模式说明**：
+
+用户在前端勾选若干商品后发起提问，`compareProductIds` 随之带上。此时 Agent：
+
+1. 逐件拉取商品详情（`get_product_detail`），拿到参数与库存
+2. 按「质量 / 性价比 / 适配场景」三个维度横向比较
+3. 给出明确结论（推荐哪一件、为什么、什么情况下选另一件）
+4. 不重新执行商品检索 —— 用户已经指定了要比的对象
+
+`compareProductIds` 超过 5 个时，Java 侧截断为前 5 个并记 warn 日志。少于 1 个等同于不传。
 
 **Response**：`Content-Type: text/event-stream`
 
@@ -213,6 +230,7 @@ data: <json>
     { "role": "assistant", "content": "您好，想买点什么？" }
   ],
   "slots": { "category": null, "budget": null, "scene": null },
+  "compareProductIds": [],
   "traceId": "uuid-v4",
   "image": null
 }

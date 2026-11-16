@@ -52,3 +52,7 @@ ignore = ["SIM117", "SIM102"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# 显式指定 fixture 事件循环作用域，消除 pytest-asyncio 的弃用警告。
+# 用 function 是因为各测试之间不该共享事件循环（Redis 客户端会跨用例串状态）。
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]

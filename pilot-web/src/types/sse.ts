@@ -40,6 +40,9 @@ export interface Slots {
   scene: string | null
 }
 
+/** 对比模式允许的最大商品数，与后端 ChatRequest.MAX_COMPARE 保持一致 */
+export const MAX_COMPARE = 5
+
 export interface ToolCall {
   tool: string
   displayText: string

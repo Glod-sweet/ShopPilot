@@ -19,6 +19,23 @@
 # =============================================================
 set -uo pipefail
 
+# -------------------------------------------------------------
+# 环境加固：确保能调用 Windows 原生命令
+#
+# 为什么需要：Git Bash 的 netstat/tasklist 实际是调用
+# C:\Windows\System32\*.exe。如果启动终端时 PATH 不完整
+# （IDE 启动的终端、或 env -i 这类干净环境），会报
+# "netstat: command not found"，导致脚本误判成「端口无监听」——
+# 这个假阴性比真故障更难查，所以这里直接把 System32 补进 PATH。
+# -------------------------------------------------------------
+export PATH="/c/Windows/System32:/c/Windows:$PATH"
+
+# 命令解析：优先用绝对路径，彻底不依赖 PATH
+NETSTAT="/c/Windows/System32/netstat.exe"
+TASKLIST="/c/Windows/System32/tasklist.exe"
+[ -x "$NETSTAT" ] || NETSTAT="netstat"
+[ -x "$TASKLIST" ] || TASKLIST="tasklist"
+
 MYSQL_HOME="${MYSQL_HOME:-D:/develop/mysql-9.7.0-winx64}"
 MYSQLD="$MYSQL_HOME/bin/mysqld.exe"
 MYSQL="$MYSQL_HOME/bin/mysql.exe"
@@ -37,14 +54,14 @@ LOG_FILE="$RUNTIME_DIR/error.log"
 mkdir -p "$RUNTIME_DIR"
 
 port_busy() {
-    netstat -ano 2>/dev/null | grep -E "[:.]${PORT}[[:space:]]+.*LISTENING" >/dev/null 2>&1
+    "$NETSTAT" -ano 2>/dev/null | grep -E "[:.]${PORT}[[:space:]]+.*LISTENING" >/dev/null 2>&1
 }
 
 case "${1:-start}" in
   status)
     if port_busy; then
         echo "[OK] MySQL 正在监听 ${PORT} 端口"
-        netstat -ano | grep -E "[:.]${PORT}[[:space:]]+.*LISTENING" | head -3
+        "$NETSTAT" -ano | grep -E "[:.]${PORT}[[:space:]]+.*LISTENING" | head -3
     else
         echo "[DOWN] ${PORT} 端口无监听"
         exit 1
@@ -76,9 +93,12 @@ case "${1:-start}" in
 
     # pid 文件不可信时（进程被外部杀掉/pid 文件残留），按端口兜底
     if [ "$killed" -eq 0 ]; then
-        pid="$(netstat -ano 2>/dev/null | grep -E "[:.]${PORT}[[:space:]]+.*LISTENING" | head -1 | awk '{print $NF}' | tr -d '[:space:]')"
+        pid="$("$NETSTAT" -ano 2>/dev/null | grep -E "[:.]${PORT}[[:space:]]+.*LISTENING" | head -1 | awk '{print $NF}' | tr -d '[:space:]')"
         if [ -n "${pid:-}" ]; then
-            taskkill //PID "$pid" //F 2>/dev/null && echo "[OK] 已按端口停止 pid=$pid"
+            # taskkill 同样用绝对路径：Git Bash 下 //PID 的双斜杠是防路径转换，不能省
+            TASKKILL="/c/Windows/System32/taskkill.exe"
+            [ -x "$TASKKILL" ] || TASKKILL="taskkill"
+            "$TASKKILL" //PID "$pid" //F 2>/dev/null && echo "[OK] 已按端口停止 pid=$pid"
         else
             echo "[INFO] 没有运行中的实例"
         fi

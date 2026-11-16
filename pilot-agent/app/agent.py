@@ -23,6 +23,7 @@ state 不只有 messages，还带本轮算出来的 slots / knowledge / image_de
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -221,6 +222,7 @@ async def prepare(req: AgentChatRequest) -> PreparedContext:
         knowledge=knowledge or None,
         slots=merged_slots,
         multimodal_hint=image_desc or None,
+        compare_ids=req.compare_product_ids or None,
     )
 
     # 6) 历史（先按条数截断，中间件还会按 token 预算再裁一次）
@@ -242,25 +244,59 @@ async def prepare(req: AgentChatRequest) -> PreparedContext:
 # 图构建
 # --------------------------------------------------------------------------
 
+# 图缓存。create_agent 内部要编译 LangGraph（构建节点、边、中间件链），
+# 每请求重建是实打实的开销 —— 实测首次约 120ms，之后每次仍有 30~50ms。
+# 这个开销不产生任何价值：工具集和中间件都是无状态的，图建一次就能复用。
+#
+# 缓存键里带上 MCP 就绪状态：MCP 是懒加载的，启动时可能还没就绪，
+# 就绪后工具集会多两个联网工具，必须重建图才能让模型看到它们。
+_graph_cache: dict[tuple[bool, int], Any] = {}
+_graph_lock = asyncio.Lock()
+
+
 async def build_graph():
-    """组装 Agent。工具集按 MCP 可用性动态决定。"""
+    """组装 Agent。工具集按 MCP 可用性动态决定，结果带缓存。
+
+    缓存键 = (MCP 是否就绪, 工具总数)。
+    加工具总数是为了兜住「MCP 工具列表变化」这种边缘情况 —— 虽然当前不会发生，
+    但一个稳定的缓存键比一个「假设不会变」的注释更可靠。
+    """
     await mcp_toolkit.ainit()
+
     tools = [*BUSINESS_TOOLS]
     if mcp_toolkit.ready:
         tools.extend(mcp_toolkit.tools)
 
-    return create_agent(
-        model=get_chat_model(),
-        tools=tools,
-        system_prompt=None,  # 每轮动态拼，由 inputs 里的 SystemMessage 提供
-        middleware=[
-            ContextTrimMiddleware(),
-            ToolRetryMiddleware(retries=1),
-            AuditMiddleware(),
-        ],
-        state_schema=AgentState,
-        name="shoppilot",
-    )
+    key = (mcp_toolkit.ready, len(tools))
+    cached = _graph_cache.get(key)
+    if cached is not None:
+        return cached
+
+    async with _graph_lock:
+        # 双重检查：等锁期间可能已有别的请求建好了
+        cached = _graph_cache.get(key)
+        if cached is not None:
+            return cached
+
+        started = time.monotonic()
+        graph = create_agent(
+            model=get_chat_model(),
+            tools=tools,
+            system_prompt=None,  # 每轮动态拼，由 inputs 里的 SystemMessage 提供
+            middleware=[
+                ContextTrimMiddleware(),
+                ToolRetryMiddleware(retries=1),
+                AuditMiddleware(),
+            ],
+            state_schema=AgentState,
+            name="shoppilot",
+        )
+        _graph_cache[key] = graph
+        logger.info(
+            "graph: 构建完成并缓存 key=%s tools=%d 耗时=%dms",
+            key, len(tools), int((time.monotonic() - started) * 1000),
+        )
+        return graph
 
 
 # --------------------------------------------------------------------------
@@ -320,12 +356,13 @@ async def run_agent(req: AgentChatRequest) -> AsyncIterator[SseEvent]:
     #   3. 行为确定 —— 模型有时会「自作聪明」先搜一堆再问，用户体验很差
     #   4. handbook 4.4 的硬要求：必填槽位齐了才执行检索
     #
-    # 但「拦截」必须克制，否则会把正常对话打断。四类情况一律放行给模型：
+    # 但「拦截」必须克制，否则会把正常对话打断。五类情况一律放行给模型：
     #   - 「再来一单」：用户不想重新挑，追问预算毫无意义
     #   - 带图片：用户拍了个东西问「这个有吗」，先让他看到识图结果
     #   - 回指/追问（「我刚才说预算多少」「这两款哪个好」）：指的是上文已建立的需求，
     #     拿它追问品类会让用户觉得助手失忆了
     #   - 已有对话历史：多轮对话里模型自己会判断该不该问，硬拦反而更差
+    #   - 对比模式：用户已经选好商品了，再问「想买哪一类」纯属废话
     quick_slots = fill_slots(req.message, req.slots.model_dump())
     missing = missing_required(quick_slots)
     is_first_turn = not req.history
@@ -335,6 +372,7 @@ async def run_agent(req: AgentChatRequest) -> AsyncIterator[SseEvent]:
         and not is_reorder_intent(req.message)
         and not is_followup_question(req.message)
         and not req.image
+        and not req.is_compare_mode
     )
     if should_ask:
         slot = missing[0]

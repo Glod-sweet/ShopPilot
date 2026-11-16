@@ -33,6 +33,62 @@ mysql -h 127.0.0.1 -P 3306 -u root -p1234 --default-character-set=utf8mb4 < pilo
 
 ---
 
+## 一之一、终端环境（必读，否则脚本会误报）
+
+**脚本必须在 Git Bash 里运行，不能在 PowerShell 里直接 `bash`。**
+
+原因：PowerShell 里的 `bash` 命令会调起 `C:\Windows\System32\bash.exe`，
+那是 **WSL（Linux 子系统）**，不是 Git Bash。脚本用的 `netstat -ano` / `tasklist`
+在 Linux 下都不工作，会得到**假报错**：
+
+| 你看到的 | 真实原因 |
+|---|---|
+| `[DOWN] 3306 端口无监听` | Linux 的 netstat 不认 `-ano`，返回空 |
+| `[INFO] 没有运行中的实例` | Linux 没有 `tasklist` 命令 |
+| `[FAIL] 找不到 mysqld` | Linux 里没有 `D:` 盘符 |
+
+**这三个报错全是假象**，MySQL 可能好好地在跑。
+
+### 已做的修复：DataGrip 终端默认改成 Git Bash
+
+配置写在 `%APPDATA%\JetBrains\DataGrip2026.1\options\terminal.xml`：
+
+```xml
+<application>
+  <component name="TerminalOptionsProvider">
+    <option name="myShellPath" value="C:\Users\zhang\.workbuddy-ai\binaries\PortableGit\versions\1.3.0\bin\bash.exe" />
+  </component>
+</application>
+```
+
+**生效方式**：重启 DataGrip，之后底部 Terminal 打开就是 Git Bash，提示符是
+`user@host MINGW64 /d/Git/ShopPilot`，而不是 `PS D:\Git\ShopPilot>`。
+
+判断方法：提示符里带 **`PS`** 就是 PowerShell（错），带 **`MINGW64`** 才是 Git Bash（对）。
+
+### 脚本本身也做了加固
+
+`mysql-start.sh` 现在会主动把 `System32` 补进 PATH，并用绝对路径调用
+`netstat.exe` / `tasklist.exe` / `taskkill.exe`。
+
+为什么需要：Git Bash 的这些命令其实是转发到 `C:\Windows\System32\*.exe`，
+如果 IDE 启动终端时环境变量不完整，会报 `netstat: command not found`，
+同样导致误判成「端口无监听」。加固后即使 `env -i` 清空环境也能正确工作。
+
+### 如果不想改终端
+
+在 PowerShell 里用原生命令等价实现：
+
+```powershell
+# 查看状态
+netstat -ano | Select-String ":3306.*LISTENING"
+
+# 停止
+Get-Process mysqld -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+---
+
 ## 一之二、DataGrip 连接
 
 数据源已预置在 `.idea/dataSources.xml` + `.idea/dataSources.local.xml`，**不需要手动填连接串**。
