@@ -47,8 +47,12 @@ target-version = "py311"
 [tool.ruff.lint]
 # SIM117：MCP 的 stdio_client + ClientSession 两层嵌套 with 表达"连接 → 会话"两个阶段，
 # 合并成一行反而看不出层次，故保留嵌套写法。
-# SIM102：mock 脚本里的条件判断，合并后可读性下降。
-ignore = ["SIM117", "SIM102"]
+ignore = ["SIM117"]
+
+[tool.ruff.lint.per-file-ignores]
+# scripts/ 下的脚本要 sys.path.insert 之后才能 import app.*，
+# 这是直接以脚本方式运行的必然写法，E402（import 不在文件顶部）在此不适用。
+"scripts/*.py" = ["E402"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
