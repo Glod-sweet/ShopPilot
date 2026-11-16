@@ -182,12 +182,11 @@ jdbc:mysql://127.0.0.1:3306/shop_pilot
 不想打开 DataGrip 也能验证配置是否可用：
 
 ```bash
-bash pilot-infra/scripts/verify-datasource.sh
-# 用 DataGrip 自带的 mysql-connector-j-9.7.0 跑一次真实连接，
-# 输出表数量、中文是否正确、TINYINT(1) 的 Java 类型
+bash pilot-infra/scripts/mysql-start.sh check
+# 连库并统计商品数，输出形如 product_cnt 32
 ```
 
-期望输出 `PASS: DataGrip 数据源配置可用`。
+期望输出 `PASS` 与商品总数。
 
 ---
 
@@ -263,7 +262,6 @@ Java 层读候选集（结构化过滤先做，把候选压到几百条）
 | **场景** | `sp_scene` `sp_scene_category` `sp_product_scene` | **本项目的差异化核心**，见下 |
 | 会话 | `sp_chat_session` `sp_chat_message` `sp_chat_slot` | 槽位持久化在 Java 侧，Python 无状态 |
 | 交易 | `sp_cart_item` `sp_order` `sp_order_item` | 写操作只由 Java 执行 |
-| 观测 | `sp_recommend_log` `sp_tool_call_log` | 算点击率/转化率/时延 |
 
 ### 4.2 为什么单独做「场景域」
 
@@ -365,8 +363,6 @@ JSON_UNQUOTE(JSON_EXTRACT(p.attributes, '$."防水等级"'))
 | `sp_order` | 4 | 含 1 笔 `source='agent'`（AI 导购成单归因） |
 | `sp_order_item` | 4 | |
 | `sp_cart_item` | 1 | |
-| `sp_recommend_log` | 3 | 可直接算 CTR/CVR |
-| `sp_tool_call_log` | 4 | |
 
 ---
 
@@ -382,15 +378,17 @@ JSON_UNQUOTE(JSON_EXTRACT(p.attributes, '$."防水等级"'))
 
 ---
 
-## 八、与 pgvector 方案的关系
+## 八、向量存储的当前形态与升级路径
 
-`pilot-infra/sql/pg/01_init_vector.sql` 仍然保留，作为**后续升级路径**：
+当前实现：**MySQL 单库 + 应用层算余弦相似度**，0 个额外中间件。
 
-- 当前：MySQL 单库，应用层算相似度（0 个额外中间件，够用）
+原计划的 PostgreSQL + pgvector 方案已移除（本机无 Docker，PG 起不来，且 MySQL 社区版
+不支持向量索引）。`sp_product_embedding` 的表结构刻意与 pgvector 版本保持同构
+（`product_id / content / embedding / category_id / price / on_shelf / stock`），
+将来迁移只需把「读 MySQL + 应用层算」换成「查 PG」，上层代码不动。
+
 - 升级触发条件：商品量 > 10 万，或应用层相似度计算成为瓶颈
-- 迁移成本：`sp_product_embedding` 结构与 `product_embedding` 同构，只需把「读 MySQL + 应用层算」换成「查 PG」
-
-`pilot-infra/docker-compose.yml` 里的 MySQL/PG/Redis 三件套在装好 Docker 后仍可用，但**本地开发已改为直连本机 MySQL 实例**，不依赖 Docker。
+- 迁移成本：换掉 `ProductRepository.findCandidates` 与 `HybridSearchService.rank` 两处
 
 ---
 
@@ -446,14 +444,4 @@ MySQL 的 JSON 列经 R2DBC 返回的是 **String 而非 List**，最初用 `ins
 | 超量（99 件，库存 3） | `2001 库存不足，当前仅剩 3 件` |
 
 写操作要求 `X-User-Id` 头（由内部鉴权过滤器校验），Python 侧需带上。
-
-### 9.5 埋点与统计
-
-```sql
-SELECT * FROM sp_v_recommend_daily;
--- 2026-11-14 | 6 | 66 | 1 | 1 | 0.0152 | 0.0152 | 351
-```
-
-`sp_tool_call_log` 也在真实记录（`search_products` / `add_to_cart` / `get_order_history`），
-这是排查 Agent 行为与算 CTR/CVR 的数据基础。
 

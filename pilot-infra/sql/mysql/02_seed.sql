@@ -33,8 +33,6 @@ TRUNCATE TABLE sp_order;
 TRUNCATE TABLE sp_chat_slot;
 TRUNCATE TABLE sp_chat_message;
 TRUNCATE TABLE sp_chat_session;
-TRUNCATE TABLE sp_recommend_log;
-TRUNCATE TABLE sp_tool_call_log;
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- -------------------------------------------------------------
@@ -456,25 +454,3 @@ INSERT INTO sp_order_item (order_id, product_id, sku_id, product_title, sku_spec
 
 INSERT INTO sp_cart_item (user_id, product_id, sku_id, quantity, selected, source, session_id) VALUES
 (3, 500901, NULL, 1, 1, 'agent', 3);
-
--- -------------------------------------------------------------
--- 埋点示例（让效果视图有数可看）
--- -------------------------------------------------------------
-INSERT INTO sp_recommend_log
-(trace_id, session_id, user_id, query, recalled_ids, filtered_ids, shown_ids, clicked_ids, ordered_ids,
- recall_count, shown_count, latency_ms, created_at) VALUES
-('tr-1001', 1, 1, '想给女朋友买个生日礼物，300以内',
- JSON_ARRAY(200301,200302,200303,200401,300601,100237,200304,200305), JSON_ARRAY(200301,200302,200303,200401,300601),
- JSON_ARRAY(200301,200302), JSON_ARRAY(200301), JSON_ARRAY(200301), 8, 2, 1875, '2026-11-14 10:30:04'),
-('tr-2001', 2, 1, '500以内的跑步耳机',
- JSON_ARRAY(100234,100235,100236,100237,100238,400701), JSON_ARRAY(100234,100236,400701),
- JSON_ARRAY(100234), JSON_ARRAY(100234), NULL, 6, 1, 2140, '2026-11-13 21:10:18'),
-('tr-3001', 3, 3, '上次买的洗衣液再来一单',
- JSON_ARRAY(500901,500902,500903), JSON_ARRAY(500901,500902,500903),
- JSON_ARRAY(500901), JSON_ARRAY(500901), JSON_ARRAY(500901), 3, 1, 940, '2026-11-12 19:30:24');
-
-INSERT INTO sp_tool_call_log (trace_id, session_id, tool_name, args, result_code, elapsed_ms, created_at) VALUES
-('tr-1001', 1, 'search_products', JSON_OBJECT('category','gift','maxPrice',300,'scene','birthday_gift'), 0, 340, '2026-11-14 10:30:03'),
-('tr-2001', 2, 'search_products', JSON_OBJECT('category','earphone','maxPrice',500,'scene','running'), 0, 412, '2026-11-13 21:10:17'),
-('tr-3001', 3, 'get_order_history', JSON_OBJECT('userId',3), 0, 88, '2026-11-12 19:30:22'),
-('tr-3001', 3, 'add_to_cart', JSON_OBJECT('productId',500901,'quantity',1), 0, 126, '2026-11-12 19:31:05');

@@ -9,8 +9,7 @@
 | pilot-web | 5173 | 是 | Vite 开发服务器 |
 | pilot-server | 8080 | **是** | 唯一对外入口，前端只认它 |
 | pilot-agent | 8000 | 否 | 内网访问，不暴露给前端 |
-| MySQL | 3306 | 否 | |
-| PostgreSQL (pgvector) | 5432 | 否 | 商品向量检索 |
+| MySQL | 3306 | 否 | 业务库 + 商品向量（JSON 列，应用层算余弦） |
 | Redis | 6379 | 否 | 会话缓存（可选） |
 
 ## 2. 鉴权

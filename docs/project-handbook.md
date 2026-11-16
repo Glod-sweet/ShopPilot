@@ -98,8 +98,7 @@ Vue3 (5173) ──HTTP/SSE──▶ Java (8080) ──HTTP/SSE──▶ Python A
 | Agent | LangChain | 1.x | 未安装，待接 |
 | Agent | LangGraph | 1.x | 未安装，待接 |
 | Agent | FastAPI | 0.115+ | ✅ |
-| 数据 | MySQL | 8.4 | Docker |
-| 数据 | PostgreSQL + pgvector | 17 + 0.7+ | Docker |
+| 数据 | MySQL | 8.4 | 本机实例（直连，不走 Docker） |
 | 数据 | Redis | 7.x | 可选 |
 
 ### 3.2 ⚠️ Java 版本风险（必须处理）
@@ -122,7 +121,7 @@ Vue3 (5173) ──HTTP/SSE──▶ Java (8080) ──HTTP/SSE──▶ Python A
 | Java Web 模型 | **WebFlux**（非 Spring MVC） | 同步阻塞接流会占满线程池，10 个并发就崩 |
 | Java↔Python | **REST + SSE**（非 gRPC） | 简单好调试；gRPC 收益要到每秒几百次内部调用才体现 |
 | 编排框架 | 先 LangChain，L4 需求出现时上 LangGraph | LangGraph 是有状态图，多步规划/人工确认场景可控性远高于 AgentExecutor |
-| 向量库 | **pgvector**（非 Milvus） | 零新增组件，百万级以下文档完全够用 |
+| 向量存储 | **MySQL JSON 列 + 应用层算余弦** | MySQL 社区版无向量索引，先结构化过滤再算相似度反而更快；表结构与 pgvector 版本同构，将来可平滑迁移 |
 | 模型 | DeepSeek / 通义（兼容 OpenAI 协议） | 成本比国外低一个数量级，function calling 成熟；设计成配置化可切换 |
 | 前端流式 | 手写 fetch + ReadableStream | `EventSource` 不支持 POST，也无法带 Authorization 头 |
 | UI 库 | 暂未引入，原生 CSS | 减少早期依赖，后续可换 Naive UI |
@@ -181,25 +180,28 @@ Vue3 (5173) ──HTTP/SSE──▶ Java (8080) ──HTTP/SSE──▶ Python A
 
 **这是项目最有技术含量的一段**，也是和「随便接个 RAG」拉开差距的地方。
 
-数据库设计（已实现，见 `pilot-infra/sql/pg/01_init_vector.sql`）：
+数据库设计（已实现，见 `pilot-infra/sql/mysql/01_schema.sql`）：
 
 ```sql
-CREATE TABLE product_embedding (
+CREATE TABLE sp_product_embedding (
   product_id   BIGINT PRIMARY KEY,
-  title        TEXT,
-  content      TEXT,              -- 标题+卖点+属性拼接后向量化
-  embedding    vector(1024),
+  content      TEXT,              -- 标题+卖点+品类+品牌+场景词 拼接后向量化
+  content_hash CHAR(32),          -- 增量回填用：文本没变就跳过
+  embedding    JSON,              -- 1536 维浮点数组
+  dim          INT,               -- 实际维度，0 表示尚未回填
+  model        VARCHAR(64),
   category_id  BIGINT,            -- 冗余，用于过滤
-  price        NUMERIC(10,2),     -- 冗余，用于范围过滤
+  price        DECIMAL(10,2),     -- 冗余，用于范围过滤
   brand_id     BIGINT,
-  on_shelf     BOOLEAN,
-  stock        INT,
-  updated_at   TIMESTAMPTZ
+  on_shelf     TINYINT(1),
+  stock        INT
 );
-CREATE INDEX ON product_embedding USING hnsw (embedding vector_cosine_ops);
 ```
 
-`category_id` 和 `price` 冗余进来，是为了让过滤和检索在一次查询里完成，避免先向量召回再回表过滤导致召回数量不够。用 HNSW 而非 IVFFlat，因为更适合增量写入。
+**没有向量索引**：MySQL 社区版不支持 `HNSW`/`IVFFlat`，建索引会直接报错。
+所以策略是**先结构化过滤（上架/库存/价格/品类）拿到候选集，再在应用层算余弦**——
+数据量小的时候这比全表向量扫描更快，且省掉一个中间件。
+`category_id` 和 `price` 冗余进来就是为这一步服务。
 
 ### 4.4 槽位状态机（多轮对话关键）
 
@@ -252,8 +254,7 @@ CREATE TABLE agent_recommend_log (
 | pilot-server | 8080 | **是**（唯一入口） |
 | pilot-agent | 8000 | 否（内网） |
 | MySQL | 3306 | 否 |
-| PostgreSQL | 5432 | 否 |
-| Redis | 6379 | 否 |
+| Redis | 6379 | 否（可选） |
 
 ### 5.2 鉴权
 
@@ -318,115 +319,60 @@ Python **不解析 JWT**，用户身份完全由 Java 通过 `X-User-Id` 传入�
 
 ---
 
-## 六、已完成的代码
-
-**提交**：`7080a14`（本地）/ `3511665`（远端），39 个文件，3723 行
-
-### 6.1 目录结构
+## 六、代码结构
 
 ```
 ShopPilot/
-├── .gitignore
-├── README.md
 ├── docs/
-│   ├── api-contract.md          三端接口契约
+│   ├── api-contract.md          三端接口契约（唯一事实来源）
+│   ├── database.md              库表设计与检索实现
+│   ├── agent-design.md          Agent 层设计取舍
 │   └── project-handbook.md      本文档
-├── pilot-web/                   Vue3 前端
-│   ├── index.html
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── vite.config.ts
+├── pilot-web/                   Vue3 + TS，Vite
 │   └── src/
-│       ├── main.ts
-│       ├── App.vue              对话界面（全部 UI 逻辑）
-│       ├── style.css
-│       ├── api/chat.ts          SSE 流式客户端
-│       └── types/sse.ts         事件类型定义
-├── pilot-server/                Java 后端
-│   ├── pom.xml
-│   └── src/main/
-│       ├── java/com/shoppilot/
-│       │   ├── PilotServerApplication.java
-│       │   ├── chat/
-│       │   │   ├── ChatController.java       /api/chat/stream
-│       │   │   ├── AgentClient.java          连 Python
-│       │   │   ├── HealthController.java
-│       │   │   └── dto/
-│       │   │       ├── ChatRequest.java
-│       │   │       └── AgentChatRequest.java
-│       │   ├── config/
-│       │   │   ├── AgentClientConfig.java    WebClient + 超时
-│       │   │   ├── CorsConfig.java
-│       │   │   └── PilotAgentProperties.java
-│       │   └── internal/
-│       │       └── InternalToolController.java  /internal/* 供 Python 调用
-│       └── resources/application.yml
-├── pilot-agent/                 Python Agent
-│   ├── pyproject.toml
-│   ├── .env.example
-│   ├── .python-version          3.13
-│   ├── run.py
+│       ├── views/               CatalogView / ChatView / ProductDetailView
+│       ├── components/catalog/  EmptyState / ErrorState / ListSkeleton / ProductRow
+│       ├── api/                 catalog.ts（REST）+ chat.ts（SSE 手写解析）
+│       ├── composables/         useProductQuery（请求状态与竞态处理）
+│       └── types/               product.ts / sse.ts
+├── pilot-server/                Spring Boot WebFlux + R2DBC
+│   └── src/main/java/com/shoppilot/
+│       ├── catalog/             商品浏览（人找货）
+│       ├── chat/                SSE 转发，Java 只透传不改内容
+│       ├── search/              HybridSearchService + EmbeddingService
+│       ├── internal/            给 Python 调的内部工具接口
+│       ├── trade/               购物车 / 订单
+│       ├── security/            JWT + 内部 token 双鉴权
+│       ├── repository/          R2DBC 查询，SafeBind 处理可空绑定
+│       └── common/              统一响应、错误码、traceId
+├── pilot-agent/                 Python + LangChain，无状态
 │   ├── app/
-│   │   ├── __init__.py
-│   │   ├── main.py              FastAPI 入口
-│   │   ├── agent.py             编排逻辑（当前 mock 流式）
-│   │   ├── schemas.py           数据契约
-│   │   ├── java_client.py       工具数据来源
-│   │   └── config.py            配置
-│   └── scripts/e2e_check.py     端到端验证脚本
+│   │   ├── agent.py             图组装 + SSE 产出（唯一出口）
+│   │   ├── middleware.py        上下文裁剪 / 审计 / 工具重试
+│   │   ├── rag.py               知识库混合检索（向量 + IDF）
+│   │   ├── memory.py            Redis 双层记忆（原文 + 摘要）
+│   │   ├── tools.py             业务工具（检索/详情/订单/对比）
+│   │   ├── reason.py            场景化推荐理由生成
+│   │   ├── mcp_tools.py         MCP stdio 接入（Tavily）
+│   │   ├── slots.py             槽位抽取与追问
+│   │   └── prompts.py           提示词拼装
+│   ├── knowledge/               导购知识库（Markdown，按标题切块）
+│   ├── tests/                   pytest，124 个用例
+│   └── scripts/                 e2e_check.py / embed_backfill.py
 └── pilot-infra/
-    ├── docker-compose.yml       MySQL + PG/pgvector + Redis
-    ├── .env.example
-    └── sql/pg/01_init_vector.sql
+    ├── scripts/mysql-start.sh   本机 MySQL 启停
+    └── sql/mysql/               01_schema / 02_seed / 03_auth
 ```
 
-### 6.2 各文件职责要点
+**三端职责边界**（最容易搞错的地方）：
 
-**pilot-web**
+| 层 | 负责 | 不负责 |
+|---|---|---|
+| pilot-web | 渲染、交互、SSE 解析 | 任何业务判断 |
+| pilot-server | 数据、鉴权、检索打分、事务 | 自然语言理解 |
+| pilot-agent | 意图、槽位、工具编排、话术 | 直连数据库 |
 
-| 文件 | 要点 |
-|---|---|
-| `src/api/chat.ts` | 手写 SSE 帧解析（`\n\n` 分帧，兼容 `\r\n`），半截 JSON 直接丢弃不打断流 |
-| `src/App.vue` | 槽位在前端累积（`slots` ref），`pendingSlot` 记录当前等待哪个槽位 |
-| `src/types/sse.ts` | 与 `api-contract.md` 严格对应 |
-
-**pilot-server**
-
-| 文件 | 要点 |
-|---|---|
-| `ChatController` | 返回 `Flux<ServerSentEvent>`，**绝不 collectList()**，否则流式退化成「憋完整再吐」；响应头带 `X-Accel-Buffering: no` |
-| `AgentClient` | WebClient 透传，`doOnError` 只记日志不改内容 |
-| `InternalToolController` | 当前 mock 数据，真实实现需接商品/订单库 |
-| `PilotAgentProperties` | record + `@ConfigurationPropertiesScan`，非 Lombok |
-
-**pilot-agent**
-
-| 文件 | 要点 |
-|---|---|
-| `agent.py` | 槽位检查**前置**：缺信息只追问、不检索；工具失败转 `error` 事件不编造数据 |
-| `main.py` | 只做协议转换；校验 `X-Internal-Token`；身份以 `X-User-Id` 为准，不信任请求体里的 userId |
-| `java_client.py` | 工具数据唯一来源，硬约束不连库；超时 5s 快速失败 |
-
-### 6.3 端到端验证结果（真实跑通）
-
-```
-→ POST /api/chat/stream
-  status=200
-  X-Session-Id=s_bab31cc26ba04965
-  Content-Type=text/event-stream;charset=UTF-8
-  [product_card] {"products": [{"productId": 100234, "title": "木质调香薰礼盒", ...}]}
-  [done] {"messageId": "m_4993227", "finishReason": "stop", "totalTokens": 106, "latencyMs": 1875}
-
-=== 结果 ===
-  事件序列: ['meta', 'tool_call', 'tool_result'] … ['token', 'done']
-  事件总数: 111
-  token 数: 106
-  首 token 延迟: 0.70s
-  总耗时: 2.36s
-  拼接文本: 根据您的需求「想给女朋友买个生日礼物，300以内」，我从商品库里筛选出几款符合预算的选择…
-
-PASS: 三端流式链路正常
-```
+数据归 Java，判断归 Python。这条线一旦破了，两边都会长出重复逻辑。
 
 ---
 
@@ -463,13 +409,14 @@ npm run dev
 
 打开 http://localhost:5173
 
-**④ 基础设施（做向量检索时才需要）**
+**④ 数据库**
 
 ```bash
-cd pilot-infra
-cp .env.example .env
-docker compose up -d
+bash pilot-infra/scripts/mysql-start.sh start   # 前台阻塞，Ctrl+C 停止
+bash pilot-infra/scripts/mysql-start.sh check   # 连库自检
 ```
+
+首次需导入 schema 与种子数据（见 `docs/database.md` 第二章）。
 
 ### 7.2 验证链路
 
@@ -545,49 +492,20 @@ curl http://localhost:8000/agent/health
 
 ---
 
-## 九、待处理事项
+## 九、已知限制
 
-### 9.1 阻塞项：git 分叉
+按「会不会影响答辩/演示」排序：
 
-**现状**
+| 限制 | 影响 | 为什么先不做 |
+|---|---|---|
+| 未接 LangSmith | 只能看结构化日志，缺跨请求链路追踪与 token 成本统计 | 需要外部账号；当前 e2e 脚本已覆盖主要路径 |
+| 未手写 StateGraph | 用不上条件边与 `interrupt`（写操作人工确认靠前端二次点击） | ReAct 是标准模式，预置实现已处理好并行工具调用与配对 |
+| 埋点表已移除 | 算不出点击率/转化率 | 之前建了表但从未写入，属死代码，已随本次清理删除 |
+| 商品量仅 32 | 检索效果无法充分验证 | 种子数据足够演示三类场景（送礼/运动/通勤） |
 
-```
-* 7080a14  初步框架-三国鼎立          ← 本地 main
-| * 3511665  feat: 三端骨架与...      ← 远端 main
-|/
-* 68e0e14  Initial commit
-```
-
-`git rev-list --left-right --count origin/main...main` → `1  1`（各领先一个）
-
-**三个方案**
-
-| 方案 | 操作 | 结果 | 风险 |
-|---|---|---|---|
-| **A. 放弃本地提交信息** | `git reset --hard origin/main` | 本地变成 `3511665`，英文信息 | 丢「三国鼎立」这个中文信息，代码不丢 |
-| **B. 强制覆盖远端（推荐）** | `git push --force-with-lease` | 远端变成 `7080a14`，保留中文信息 | 内容相同，实际无风险；`--force-with-lease` 比 `--force` 安全 |
-| C. 合并两边 | `git pull --rebase` | 产生多余合并提交 | 历史变脏，不推荐 |
-
-**推荐 B**，理由：内容完全一致，仓库单人使用，`--force-with-lease` 在远端被别人改过时会拒绝执行，不会盲覆盖。
-
-**处理顺序**：先修网络（让 git 走代理），再执行方案。
-
-### 9.2 环境项
-
-- [ ] **装 JDK 21 LTS**（当前 JDK 26 属于「不保修」状态）
-- [ ] IDEA 里右键 `pilot-server/pom.xml` → **Add as Maven Project**（否则不索引依赖）
-- [ ] `pilot-agent` 装全依赖：`uv pip install -e .`（LangChain / LangGraph 还没装）
-- [ ] 装 Docker（或先用已有电商项目的 MySQL，P3 之后再上 pgvector）
-
-### 9.3 开发项
-
-- [ ] **接真实 LLM**：替换 `pilot-agent/app/agent.py` 里 `for ch in reply` 循环，改用 LangChain `astream`，事件结构不变
-- [ ] 把 `run_agent` 换成 LangGraph 状态机，正式管理槽位
-- [ ] `InternalToolController` 接真实商品/订单数据
-- [ ] 实现混合检索（向量 + 结构化过滤 + 重排序）
-- [ ] 加 JWT 鉴权（当前 `ChatController` 硬编码 `userId = 1L`）
-- [ ] 会话持久化（消息表、会话表）
-- [ ] 埋点表与效果统计
+**如果要做效果评估**，最小路径是：在 `HybridSearchService` 返回后打一条结构化日志
+（`traceId + query + shownIds`），前端点击商品时再打一条，两条按 traceId 关联即可算 CTR，
+不需要建表。
 
 ---
 
@@ -732,26 +650,3 @@ InnoDB 会对该行加排他锁，天然串行化，不需要分布式锁或悲�
 | 内部接口无 `X-Internal-Token` | ✅ 401 |
 | 会话隔离 | ✅ wangwu 只看到自己的 1 个会话 |
 
-### 12.6 尚未做的（下一步）
-
-- [ ] 混合检索的 embedding 回填：当前 `dim=0`，语义分用「字符二元组 + 关键词覆盖」近似
-- [ ] 购物车加购时的 `sessionId` 归因：`s_xxx` → 库内主键的转换还是空实现
-- [ ] 订单列表的 N+1：现在逐单查明细，订单多了要改成一次 `IN` 查询
-- [ ] 埋点写入用了 `subscribe()` 异步，进程退出时可能丢最后几条
-- [ ] Python 侧接真实 LLM，替换 `agent.py` 里的 mock 流
-
----
-
-## 附：项目命名候选（备查）
-
-最终选定 **ShopPilot（购航）**。其他候选：
-
-| 名字 | 中文 | 寓意 |
-|---|---|---|
-| ShopPilot | 购航 | Pilot 在 AI 领域是共识词汇，一看就知道有 Agent 参与；强调「领航」而非「客服」 |
-| ShopClerk | 智能店员 | Clerk 表示店员，直接点出「会办事」 |
-| PickWise | 知选 | 双关「知道该选什么」和「知识驱动」 |
-| ShopConcierge | 私人买手 | 高端感，名字偏长 |
-| AgentMall | 智购商城 | 直白但缺少个性 |
-
-选择 ShopPilot 的理由：同时说清「这是 Agent」和「这是购物场景」，两个信息一个词占住；技术上也顺——仓库名 `shop-pilot`，模块 `pilot-web`/`pilot-server`/`pilot-agent` 一眼看出三端分工。

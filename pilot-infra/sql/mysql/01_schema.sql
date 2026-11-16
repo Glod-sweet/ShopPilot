@@ -9,7 +9,6 @@
 --   场景域  sp_scene / sp_scene_category / sp_product_scene   ← 导购项目的差异化核心
 --   会话域  sp_chat_session / sp_chat_message / sp_chat_slot  ← 槽位持久化在 Java 侧
 --   交易域  sp_cart_item / sp_order / sp_order_item
---   观测域  sp_recommend_log / sp_tool_call_log               ← 效果可量化
 -- =============================================================
 
 SET NAMES utf8mb4;
@@ -22,9 +21,8 @@ CREATE DATABASE IF NOT EXISTS shop_pilot
 USE shop_pilot;
 
 -- 幂等：按依赖倒序清理
-DROP VIEW  IF EXISTS sp_v_recommend_daily;
-DROP TABLE IF EXISTS sp_tool_call_log;
-DROP TABLE IF EXISTS sp_recommend_log;
+-- 埋点视图已废弃（sp_recommend_log 表一并移除），但旧库可能残留，这里兜底清掉
+DROP VIEW IF EXISTS sp_v_recommend_daily;
 DROP TABLE IF EXISTS sp_order_item;
 DROP TABLE IF EXISTS sp_order;
 DROP TABLE IF EXISTS sp_cart_item;
@@ -296,56 +294,4 @@ CREATE TABLE sp_order_item (
     KEY idx_product (product_id)
 ) ENGINE = InnoDB COMMENT = '订单明细（支持「再来一单」查历史）';
 
--- -------------------------------------------------------------
--- 六、观测域：效果可量化（handbook 4.5）
--- -------------------------------------------------------------
-CREATE TABLE sp_recommend_log (
-    id           BIGINT      NOT NULL AUTO_INCREMENT,
-    trace_id     VARCHAR(64)          DEFAULT NULL COMMENT '全链路追踪',
-    session_id   BIGINT               DEFAULT NULL,
-    user_id      BIGINT               DEFAULT NULL,
-    query        TEXT                 DEFAULT NULL COMMENT '用户原始输入',
-    recalled_ids JSON                 DEFAULT NULL COMMENT '向量召回',
-    filtered_ids JSON                 DEFAULT NULL COMMENT '结构化过滤后',
-    shown_ids    JSON                 DEFAULT NULL COMMENT '实际展示',
-    clicked_ids  JSON                 DEFAULT NULL COMMENT '用户点击',
-    ordered_ids  JSON                 DEFAULT NULL COMMENT '最终下单',
-    recall_count INT         NOT NULL DEFAULT 0,
-    shown_count  INT         NOT NULL DEFAULT 0,
-    latency_ms   INT         NOT NULL DEFAULT 0,
-    created_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_time (created_at),
-    KEY idx_session (session_id)
-) ENGINE = InnoDB COMMENT = '推荐埋点（算点击率/转化率/时延）';
-
-CREATE TABLE sp_tool_call_log (
-    id         BIGINT      NOT NULL AUTO_INCREMENT,
-    trace_id   VARCHAR(64)          DEFAULT NULL,
-    session_id BIGINT               DEFAULT NULL,
-    tool_name  VARCHAR(64) NOT NULL COMMENT 'search_products / add_to_cart ...',
-    args       JSON                 DEFAULT NULL,
-    result_code INT        NOT NULL DEFAULT 0 COMMENT '0成功，非0对应错误码',
-    elapsed_ms INT         NOT NULL DEFAULT 0,
-    created_at DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    KEY idx_time (created_at),
-    KEY idx_tool (tool_name)
-) ENGINE = InnoDB COMMENT = '工具调用日志（排查 Agent 行为）';
-
 SET FOREIGN_KEY_CHECKS = 1;
-
--- -------------------------------------------------------------
--- 七、效果统计视图
--- -------------------------------------------------------------
-CREATE OR REPLACE VIEW sp_v_recommend_daily AS
-SELECT DATE(created_at)                                                AS stat_date,
-       COUNT(*)                                                        AS request_cnt,
-       SUM(JSON_LENGTH(shown_ids))                                     AS shown_cnt,
-       SUM(JSON_LENGTH(clicked_ids))                                   AS click_cnt,
-       SUM(JSON_LENGTH(ordered_ids))                                   AS order_cnt,
-       ROUND(SUM(JSON_LENGTH(clicked_ids)) / NULLIF(SUM(JSON_LENGTH(shown_ids)), 0), 4)  AS ctr,
-       ROUND(SUM(JSON_LENGTH(ordered_ids)) / NULLIF(SUM(JSON_LENGTH(shown_ids)), 0), 4)  AS cvr,
-       ROUND(AVG(latency_ms), 0)                                       AS avg_latency_ms
-FROM sp_recommend_log
-GROUP BY DATE(created_at);
