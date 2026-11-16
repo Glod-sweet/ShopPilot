@@ -29,6 +29,14 @@ public enum ErrorCode {
     AGENT_ERROR(3002, "Agent 服务异常", HttpStatus.BAD_GATEWAY),
     UPSTREAM_ERROR(3003, "上游服务异常", HttpStatus.BAD_GATEWAY),
 
+    // 基础设施
+    /**
+     * 数据库不可用（连不上 / 连接池耗尽 / 连接被中断）。
+     * 单独区别于 INTERNAL_ERROR：这是「依赖挂了」而不是「代码错了」，
+     * HTTP 用 503 让前端能区分「稍后重试有用」和「重试也没用」。
+     */
+    DB_UNAVAILABLE(4001, "数据服务暂时不可用，请稍后重试", HttpStatus.SERVICE_UNAVAILABLE),
+
     // 兜底
     INTERNAL_ERROR(5000, "服务器内部错误", HttpStatus.INTERNAL_SERVER_ERROR);
 

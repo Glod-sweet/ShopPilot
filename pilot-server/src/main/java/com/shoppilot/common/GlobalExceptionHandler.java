@@ -58,6 +58,56 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.fail(ErrorCode.PARAM_INVALID, ex.getMessage(), traceId(exchange)));
     }
 
+    /**
+     * 数据库不可用。
+     * <p>
+     * 为什么单独处理：数据库没起 / 连接池耗尽时，R2DBC 会抛
+     * DataAccessResourceFailureException("Failed to obtain R2DBC Connection")。
+     * 如果让它落到下面的 Exception 兜底分支，用户看到的是「服务器内部错误 5000」——
+     * 既误导（像是代码 bug），又让前端无法判断「重试有没有用」。
+     * <p>
+     * 这里返回 503 + 明确文案：这是依赖不可用，稍后重试有意义。
+     * 日志仍打完整堆栈，运维侧照样能定位。
+     */
+    @ExceptionHandler(org.springframework.dao.DataAccessException.class)
+    public ResponseEntity<ApiResponse<Void>> handleDataAccess(org.springframework.dao.DataAccessException ex,
+                                                              ServerWebExchange exchange) {
+        boolean connectionIssue = isConnectionIssue(ex);
+        ErrorCode code = connectionIssue ? ErrorCode.DB_UNAVAILABLE : ErrorCode.INTERNAL_ERROR;
+
+        log.error("数据访问异常 path={} 类型={} connectionIssue={}",
+                exchange.getRequest().getPath(), ex.getClass().getSimpleName(), connectionIssue, ex);
+
+        return ResponseEntity.status(code.status())
+                .body(ApiResponse.fail(code, code.defaultMessage(), traceId(exchange)));
+    }
+
+    /**
+     * 判断是否为「连接层面」的故障。
+     * 遍历 cause 链：Spring 会把底层驱动异常包装多层，只看最外层会漏判。
+     */
+    private boolean isConnectionIssue(Throwable ex) {
+        Throwable cur = ex;
+        int depth = 0;
+        while (cur != null && depth++ < 10) {
+            String name = cur.getClass().getName();
+            if (name.contains("DataAccessResourceFailure")
+                    || name.contains("R2dbcNonTransientResourceException")
+                    || name.contains("R2dbcTransientResourceException")
+                    || cur instanceof java.net.ConnectException
+                    || cur instanceof java.net.SocketTimeoutException) {
+                return true;
+            }
+            String msg = cur.getMessage();
+            if (msg != null && (msg.contains("Failed to obtain R2DBC Connection")
+                    || msg.contains("Connection refused"))) {
+                return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleUnknown(Exception ex, ServerWebExchange exchange) {
         log.error("未捕获异常 path={}", exchange.getRequest().getPath(), ex);

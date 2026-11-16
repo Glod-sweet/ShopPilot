@@ -33,9 +33,12 @@ dev = [
     "ruff>=0.7.0",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.uv]
+# 本项目是服务，不是给别人 import 的库。
+# package = false 让 uv 只管理依赖、不尝试把项目本身打成 wheel。
+# 否则 hatchling 会去找与项目名同名的目录（pilot_agent），找不到就报
+# "Unable to determine which files to ship inside the wheel"。
+package = false
 
 [tool.ruff]
 line-length = 100
